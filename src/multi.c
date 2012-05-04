@@ -3,7 +3,7 @@
  * @author Ohtaman
  * @brief
  *
- * @date Thu May  3 22:13:41 2012 last updated
+ * @date Fri May  4 09:54:18 2012 last updated
  * @date Fri Apr 20 04:53:10 2012 created
  */
 
@@ -20,18 +20,15 @@
 
 #include "config.h"
 
-#ifndef TRUE
 #define TRUE (1)
-#endif
-#ifndef FALSE
 #define FALSE (0)
-#endif
 
 static char *tmpdir_name = NULL;
 static char **in_fifos = NULL;
 static char **out_fifos = NULL;
-int parent_proc = TRUE;
-int DEFAULT_BUFF_SIZE = 1024;
+static int num_fifos = 0;
+static int parent_proc = TRUE;
+static const int DEFAULT_BUFF_SIZE = 1024;
 
 typedef struct {
   int num_mapper;
@@ -48,21 +45,27 @@ typedef struct {
 } thread_arg_t;
 
 opts_t *create_opts(int argc, char **argv);
-void show_help();
 void clear_opts(opts_t *opts);
-void exec_splitter(char *cmd, int in, char** outs, int num);
-void exec_mapper(char *cmd, int in_dsc, int out_dsc);
-void exec_combiner(char *cmd, char **ins, int out_dsc, int num);
+void show_help();
+
 char *create_tmpdir();
 void cleanup_tmpdir();
 int is_valid_dir(char *path);
+
+void exec_splitter(char *cmd, int in, char** outs, int num);
+void exec_mapper(char *cmd, int in_dsc, int out_dsc, int i);
+void exec_combiner(char *cmd, char **ins, int out_dsc, int num);
+
 void split_default(int in_dsc, char** outs, int num);
 void split_sequential(int in_dsc, char** outs, int num);
 void combine_default(char** ins, int out_dsc, int num);
 void combine_sequential(char** ins, int out_dsc, int num);
 void *pomp(void *args);
+int is_delimiter(char *c);
+
 int strrep(char *dest, char *src, char *before, char *after);
 int strjoin(char *dest, char **src, int num, char *delim);
+
 void wait_all();
 void trap_int();
 
@@ -76,6 +79,7 @@ int main(int argc, char **argv)
   opts_t *opts;
   opts = create_opts(argc, argv);
   if(!opts) {
+    show_help();
     exit(-1);
   }
 
@@ -87,8 +91,9 @@ int main(int argc, char **argv)
     exit(-1);
   }
 
-  in_fifos = calloc(opts->num_mapper + 1, sizeof(size_t));
-  for (i = 0; i < opts->num_mapper; ++i) {
+  num_fifos = opts->num_mapper;
+  in_fifos = malloc(sizeof(size_t)*num_fifos);
+  for (i = 0; i < num_fifos; ++i) {
     char *name;
     name = malloc(sizeof(char)*(strlen(tmpdir) + 11));
     sprintf(name, "%s/in_%d", tmpdir, i);
@@ -99,8 +104,8 @@ int main(int argc, char **argv)
     }
   }
 
-  out_fifos = calloc(opts->num_mapper + 1, sizeof(size_t));
-  for (i = 0; i < opts->num_mapper; ++i) {
+  out_fifos = malloc(sizeof(size_t)*num_fifos);
+  for (i = 0; i < num_fifos; ++i) {
     char *name;
     name = malloc(sizeof(char)*(strlen(tmpdir) + 11));
     sprintf(name, "%s/out_%d", tmpdir, i);
@@ -141,7 +146,7 @@ int main(int argc, char **argv)
       parent_proc = FALSE;
       in_dsc = open(in_fifos[i], O_RDONLY);
       out_dsc = open(out_fifos[i], O_WRONLY);
-      exec_mapper(opts->mapper, in_dsc, out_dsc);
+      exec_mapper(opts->mapper, in_dsc, out_dsc, i);
       close(in_dsc);
       close(out_dsc);
       exit(0);
@@ -182,10 +187,13 @@ opts_t *create_opts(int argc, char **argv)
     return NULL;
   }
 
-  while ((opt = getopt(argc, argv, "n:s:m:c:S")) != EOF) {
+  while ((opt = getopt(argc, argv, "n:Ss:m:c:h")) != EOF) {
     switch (opt) {
     case 'n':
       opts->num_mapper = atoi(optarg);
+      break;
+    case 'S':
+      opts->sequential = TRUE;
       break;
     case 's':
       opts->splitter = malloc(sizeof(char)*(strlen(optarg) + 1));
@@ -198,9 +206,6 @@ opts_t *create_opts(int argc, char **argv)
     case 'c':
       opts->combiner = malloc(sizeof(char)*(strlen(optarg) + 1));
       strcpy(opts->combiner, optarg);
-      break;
-    case 'S':
-      opts->sequential = TRUE;
       break;
     default:
       clear_opts(opts);
@@ -218,6 +223,17 @@ opts_t *create_opts(int argc, char **argv)
   }
 
   return opts;
+}
+
+void show_help()
+{
+  printf("usage: multi [OPTIONS]\n");
+  printf(" -c	combiner command\n");
+  printf(" -h	show this message\n");
+  printf(" -m	mapper command (required)\n");
+  printf(" -n	number of mappers (required)\n");
+  printf(" -s	splitter command\n");
+  printf(" -S	use internal splitter/combiner which preserve the order of the input sequence\n");
 }
 
 void clear_opts(opts_t *opts)
@@ -327,13 +343,13 @@ void *pomp(void *arg)
         buffer = tmp;
         buff_size *= 2;
       }
-    } while (c != '\n' && c != '\0' && c != EOF);
+    } while (!is_delimiter(&c) && c != EOF);
     pthread_mutex_unlock(arg_->mutex);
 
     if (write(arg_->out_dsc, buffer, n) == -1) {
       break;
     }
-  } while (c != '\0' && c != EOF);
+  } while (c != EOF);
 
   free(buffer);
 }
@@ -359,7 +375,7 @@ void split_sequential(int in_dsc, char** outs, int num)
           c = EOF;
         }
       }
-    } while (c != '\n' && c != EOF);
+    } while (!is_delimiter(&c) && c != EOF);
     ++i;
     i %= num;
   } while (c != EOF);
@@ -396,8 +412,11 @@ void exec_splitter(char *cmd, int in_dsc, char** outs, int num)
   execlp("sh", "sh", "-c", cmd_, NULL);
 }
 
-void exec_mapper(char *cmd, int in_dsc, int out_dsc)
+void exec_mapper(char *cmd, int in_dsc, int out_dsc, int i)
 {
+  char env[11];
+  sprintf(env, "%d", i);
+  setenv("MAPPER_ID", env, TRUE);
   dup2(in_dsc, 0);
   dup2(out_dsc, 1);
   execlp("sh", "sh", "-c", cmd, NULL);
@@ -479,7 +498,7 @@ void combine_sequential(char** ins, int out_dsc, int num)
           c = EOF;
         }
       }
-    } while (c != '\n' && c != EOF);
+    } while (!is_delimiter(&c) && c != EOF);
     ++i;
     i %= num;
   } while (c != EOF);
@@ -554,7 +573,7 @@ void cleanup_tmpdir()
   if (is_valid_dir(tmpdir_name)) {
     int i;
     wait_all();
-    for (i = 0; in_fifos[i] != '\0'; ++i) {
+    for (i = 0; i < num_fifos; ++i) {
       unlink(in_fifos[i]);
       unlink(out_fifos[i]);
     }
@@ -569,4 +588,9 @@ void trap_int()
     cleanup_tmpdir();
   }
   exit(-1);
+}
+
+int is_delimiter(char *c)
+{
+  return *c == '\n';
 }
