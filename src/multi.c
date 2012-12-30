@@ -3,7 +3,7 @@
  * @author Ohtaman
  * @brief
  *
- * @date Fri May  4 09:54:18 2012 last updated
+ * @date Fri May  4 10:20:17 2012 last updated
  * @date Fri Apr 20 04:53:10 2012 created
  */
 
@@ -225,17 +225,6 @@ opts_t *create_opts(int argc, char **argv)
   return opts;
 }
 
-void show_help()
-{
-  printf("usage: multi [OPTIONS]\n");
-  printf(" -c	combiner command\n");
-  printf(" -h	show this message\n");
-  printf(" -m	mapper command (required)\n");
-  printf(" -n	number of mappers (required)\n");
-  printf(" -s	splitter command\n");
-  printf(" -S	use internal splitter/combiner which preserve the order of the input sequence\n");
-}
-
 void clear_opts(opts_t *opts)
 {
   if (opts) {
@@ -250,6 +239,17 @@ void clear_opts(opts_t *opts)
     }
     free(opts);
   }
+}
+
+void show_help()
+{
+  printf("usage: multi [OPTIONS]\n");
+  printf(" -c	combiner command\n");
+  printf(" -h	show this message\n");
+  printf(" -m	mapper command (required)\n");
+  printf(" -n	number of mappers (required)\n");
+  printf(" -s	splitter command\n");
+  printf(" -S	use internal splitter/combiner which preserve the order of the input sequence\n");
 }
 
 char *create_tmpdir()
@@ -283,111 +283,26 @@ char *create_tmpdir()
   return tmpdir_name;
 }
 
+void cleanup_tmpdir()
+{
+  if (is_valid_dir(tmpdir_name)) {
+    int i;
+    wait_all();
+    for (i = 0; i < num_fifos; ++i) {
+      unlink(in_fifos[i]);
+      unlink(out_fifos[i]);
+    }
+    rmdir(tmpdir_name);
+    tmpdir_name = NULL;
+  }
+}
+
 int is_valid_dir(char *path)
 {
   return path != NULL && strlen(path) > 0;
 }
 
-void split_default(int in_dsc, char** outs, int num)
-{
-  pthread_t *threads;
-  thread_arg_t *args;
-  pthread_mutex_t mutex;
-  int i;
-  threads = malloc(sizeof(pthread_t)*num);
-  args = malloc(sizeof(thread_arg_t)*num);
-  pthread_mutex_init(&mutex, NULL);
-  for (i =0; i < num; ++i) {
-    if (outs[i] != NULL) {
-      args[i].in_dsc = in_dsc;
-      args[i].out_dsc = open(outs[i], O_WRONLY);
-      if (args[i].out_dsc >= 0) {
-        args[i].mutex = &mutex;
-        pthread_create(threads + i, NULL, &pomp, (void*)(args + i));
-      }
-    }
-  }
 
-  for (i =0; i < num; ++i) {
-    if (outs[i] != NULL && args[i].out_dsc >= 0) {
-      pthread_join(threads[i], NULL);
-      close(args[i].out_dsc);
-    }
-  }
-
-  free(args);
-  free(threads);
-}
-
-void *pomp(void *arg)
-{
-  thread_arg_t *arg_ = (thread_arg_t*) arg;
-  int buff_size = DEFAULT_BUFF_SIZE;
-  char *buffer = malloc(sizeof(char)*buff_size);
-  char c;
-  do {
-    int n = 0;
-    pthread_mutex_lock(arg_->mutex);
-    do {
-      if (read(arg_->in_dsc, &c, 1) != 1) {
-        c = EOF;
-        break;
-      }
-
-      buffer[n] = c;
-      ++n;
-      if (n >= buff_size) {
-        char *tmp = malloc(sizeof(char)*buff_size*2);
-        memcpy(tmp, buffer, sizeof(char)*buff_size);
-        free(buffer);
-        buffer = tmp;
-        buff_size *= 2;
-      }
-    } while (!is_delimiter(&c) && c != EOF);
-    pthread_mutex_unlock(arg_->mutex);
-
-    if (write(arg_->out_dsc, buffer, n) == -1) {
-      break;
-    }
-  } while (c != EOF);
-
-  free(buffer);
-}
-
-void split_sequential(int in_dsc, char** outs, int num)
-{
-  int i;
-  char c;
-  int *out_dscs = malloc(sizeof(int)*num);
-  for (i = 0; i < num; ++i) {
-      out_dscs[i] = open(outs[i], O_WRONLY);
-  }
-
-  i = 0;
-  do {
-    do {
-      if (out_dscs[i] >= 0) {
-        if (read(in_dsc, &c, 1) == 1) {
-          if (write(out_dscs[i], &c, 1) == -1) {
-            break;
-          }
-        } else {
-          c = EOF;
-        }
-      }
-    } while (!is_delimiter(&c) && c != EOF);
-    ++i;
-    i %= num;
-  } while (c != EOF);
-
-  for (i = 0; i < num; ++i) {
-    if (out_dscs[i] >= 0) {
-      close(out_dscs[i]);
-    }
-  }
-
-  free(out_dscs);
-}
 
 void exec_splitter(char *cmd, int in_dsc, char** outs, int num)
 {
@@ -445,6 +360,76 @@ void exec_combiner(char *cmd, char **ins, int out_dsc, int num)
   execlp("sh", "sh", "-c", cmd_, NULL);
 }
 
+
+void split_default(int in_dsc, char** outs, int num)
+{
+  pthread_t *threads;
+  thread_arg_t *args;
+  pthread_mutex_t mutex;
+  int i;
+  threads = malloc(sizeof(pthread_t)*num);
+  args = malloc(sizeof(thread_arg_t)*num);
+  pthread_mutex_init(&mutex, NULL);
+  for (i =0; i < num; ++i) {
+    if (outs[i] != NULL) {
+      args[i].in_dsc = in_dsc;
+      args[i].out_dsc = open(outs[i], O_WRONLY);
+      if (args[i].out_dsc >= 0) {
+        args[i].mutex = &mutex;
+        pthread_create(threads + i, NULL, &pomp, (void*)(args + i));
+      }
+    }
+  }
+
+  for (i =0; i < num; ++i) {
+    if (outs[i] != NULL && args[i].out_dsc >= 0) {
+      pthread_join(threads[i], NULL);
+      close(args[i].out_dsc);
+    }
+  }
+
+  free(args);
+  free(threads);
+}
+
+void split_sequential(int in_dsc, char** outs, int num)
+{
+  int i;
+  char c;
+  int eof = FALSE;
+  int *out_dscs = malloc(sizeof(int)*num);
+  for (i = 0; i < num; ++i) {
+      out_dscs[i] = open(outs[i], O_WRONLY);
+  }
+
+  i = 0;
+  do {
+    do {
+      if (out_dscs[i] >= 0) {
+        if (read(in_dsc, &c, 1) == 1) {
+          if (write(out_dscs[i], &c, 1) == -1) {
+            perror("split_sequential: failed to write.\n");
+            goto out_of_loop;
+          }
+        } else {
+          eof = TRUE;
+        }
+      }
+    } while (!is_delimiter(&c) && !eof);
+    ++i;
+    i %= num;
+  } while (!eof);
+ out_of_loop:
+
+  for (i = 0; i < num; ++i) {
+    if (out_dscs[i] >= 0) {
+      close(out_dscs[i]);
+    }
+  }
+
+  free(out_dscs);
+}
+
 void combine_default(char** ins, int out_dsc, int num)
 {
   pthread_t *threads;
@@ -481,6 +466,7 @@ void combine_sequential(char** ins, int out_dsc, int num)
 {
   int i;
   char c;
+  int eof = FALSE;
   int *in_dscs = malloc(sizeof(int)*num);
   for (i = 0; i < num; ++i) {
       in_dscs[i] = open(ins[i], O_RDONLY);
@@ -492,16 +478,18 @@ void combine_sequential(char** ins, int out_dsc, int num)
       if (in_dscs[i] >= 0) {
         if (read(in_dscs[i], &c, 1) == 1) {
           if (write(out_dsc, &c, 1) == -1) {
-            break;
+            perror("combine_sequential: failed to write.\n");
+            goto out_of_loop;
           }
         } else {
-          c = EOF;
+          eof = TRUE;
         }
       }
-    } while (!is_delimiter(&c) && c != EOF);
+    } while (!is_delimiter(&c) && !eof);
     ++i;
     i %= num;
-  } while (c != EOF);
+  } while (!eof);
+ out_of_loop:
 
   for (i = 0; i < num; ++i) {
     if (in_dscs[i] >= 0) {
@@ -510,6 +498,42 @@ void combine_sequential(char** ins, int out_dsc, int num)
   }
 
   free(in_dscs);
+}
+
+void *pomp(void *arg)
+{
+  thread_arg_t *arg_ = (thread_arg_t*) arg;
+  int buff_size = DEFAULT_BUFF_SIZE;
+  char *buffer = malloc(sizeof(char)*buff_size);
+  char c;
+  int eof = FALSE;
+  do {
+    int n = 0;
+    pthread_mutex_lock(arg_->mutex);
+    do {
+      if (read(arg_->in_dsc, &c, 1) != 1) {
+        eof = TRUE;
+        break;
+      }
+
+      buffer[n] = c;
+      ++n;
+      if (n >= buff_size) {
+        char *tmp = malloc(sizeof(char)*buff_size*2);
+        memcpy(tmp, buffer, sizeof(char)*buff_size);
+        free(buffer);
+        buffer = tmp;
+        buff_size *= 2;
+      }
+    } while (!is_delimiter(&c));
+    pthread_mutex_unlock(arg_->mutex);
+
+    if (write(arg_->out_dsc, buffer, n) == -1) {
+      break;
+    }
+  } while (!eof);
+
+  free(buffer);
 }
 
 int strrep(char *dest, char *src, char *before, char *after)
@@ -557,6 +581,11 @@ int strjoin(char *dest, char **src, int num, char *delim)
   }
 }
 
+int is_delimiter(char *c)
+{
+  return *c == '\n';
+}
+
 void wait_all()
 {
   int status;
@@ -568,29 +597,10 @@ void wait_all()
   }
 }
 
-void cleanup_tmpdir()
-{
-  if (is_valid_dir(tmpdir_name)) {
-    int i;
-    wait_all();
-    for (i = 0; i < num_fifos; ++i) {
-      unlink(in_fifos[i]);
-      unlink(out_fifos[i]);
-    }
-    rmdir(tmpdir_name);
-    tmpdir_name = NULL;
-  }
-}
-
 void trap_int()
 {
   if (parent_proc) {
     cleanup_tmpdir();
   }
   exit(-1);
-}
-
-int is_delimiter(char *c)
-{
-  return *c == '\n';
 }
