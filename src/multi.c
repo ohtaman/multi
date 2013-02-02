@@ -3,7 +3,7 @@
  * @author Ohtaman
  * @brief
  *
- * @date Fri May  4 10:20:17 2012 last updated
+ * @date Sat Feb  2 11:35:01 2013 last updated
  * @date Fri Apr 20 04:53:10 2012 created
  */
 
@@ -41,7 +41,8 @@ typedef struct {
 typedef struct {
   int in_dsc;
   int out_dsc;
-  pthread_mutex_t *mutex;
+  pthread_mutex_t *in_mutex;
+  pthread_mutex_t *out_mutex;
 } thread_arg_t;
 
 opts_t *create_opts(int argc, char **argv);
@@ -66,6 +67,8 @@ int is_delimiter(char *c);
 int strrep(char *dest, char *src, char *before, char *after);
 int strjoin(char *dest, char **src, int num, char *delim);
 
+void lock(pthread_mutex_t *mutex);
+void unlock(pthread_mutex_t *mutex);
 void wait_all();
 void trap_int();
 
@@ -365,17 +368,18 @@ void split_default(int in_dsc, char** outs, int num)
 {
   pthread_t *threads;
   thread_arg_t *args;
-  pthread_mutex_t mutex;
+  pthread_mutex_t in_mutex;
   int i;
   threads = malloc(sizeof(pthread_t)*num);
   args = malloc(sizeof(thread_arg_t)*num);
-  pthread_mutex_init(&mutex, NULL);
+  pthread_mutex_init(&in_mutex, NULL);
   for (i =0; i < num; ++i) {
     if (outs[i] != NULL) {
       args[i].in_dsc = in_dsc;
       args[i].out_dsc = open(outs[i], O_WRONLY);
       if (args[i].out_dsc >= 0) {
-        args[i].mutex = &mutex;
+        args[i].in_mutex = &in_mutex;
+        args[i].out_mutex = NULL;
         pthread_create(threads + i, NULL, &pomp, (void*)(args + i));
       }
     }
@@ -435,16 +439,17 @@ void combine_default(char** ins, int out_dsc, int num)
   pthread_t *threads;
   thread_arg_t *args;
   int i;
-  pthread_mutex_t mutex;
+  pthread_mutex_t out_mutex;
   threads = malloc(sizeof(pthread_t)*num);
   args = malloc(sizeof(thread_arg_t)*num);
-  pthread_mutex_init(&mutex, NULL);
+  pthread_mutex_init(&out_mutex, NULL);
   for (i =0; i < num; ++i) {
     if (ins[i] != NULL) {
       args[i].in_dsc = open(ins[i], O_RDONLY);
       args[i].out_dsc = out_dsc;
       if (args[i].in_dsc >= 0) {
-        args[i].mutex = &mutex;
+        args[i].in_mutex = NULL;
+        args[i].out_mutex = &out_mutex;
         pthread_create(threads + i, NULL, &pomp, (void*)(args + i));
       }
     }
@@ -509,7 +514,7 @@ void *pomp(void *arg)
   int eof = FALSE;
   do {
     int n = 0;
-    pthread_mutex_lock(arg_->mutex);
+    lock(arg_->in_mutex);
     do {
       if (read(arg_->in_dsc, &c, 1) != 1) {
         eof = TRUE;
@@ -526,11 +531,13 @@ void *pomp(void *arg)
         buff_size *= 2;
       }
     } while (!is_delimiter(&c));
-    pthread_mutex_unlock(arg_->mutex);
+    unlock(arg_->in_mutex);
 
+    lock(arg_->out_mutex);
     if (write(arg_->out_dsc, buffer, n) == -1) {
       break;
     }
+    unlock(arg_->out_mutex);
   } while (!eof);
 
   free(buffer);
@@ -584,6 +591,20 @@ int strjoin(char *dest, char **src, int num, char *delim)
 int is_delimiter(char *c)
 {
   return *c == '\n';
+}
+
+void lock(pthread_mutex_t *mutex)
+{
+  if (mutex) {
+    pthread_mutex_lock(mutex);
+  }
+}
+
+void unlock(pthread_mutex_t *mutex)
+{
+  if (mutex) {
+    pthread_mutex_unlock(mutex);
+  }
 }
 
 void wait_all()

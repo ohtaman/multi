@@ -1,2 +1,17 @@
+
+# object files
 *.o
+
+# emacs's tempolary files
 *~
+\#*\#
+
+# auto-tools tempolary files
+aclocal.m4
+autom4te.cache
+config.h
+config.status
+Makefile
+stamp-h*
+*.log
+.deps
